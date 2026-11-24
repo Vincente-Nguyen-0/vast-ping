@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VAST ping test</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --fg: #1b1f27; --muted: #5d6675; --line: #d5d9e0;
+    --card: #ffffff; --accent: #d62839; --ok: #1d8a4e; --bad: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171c; --fg: #eceff4; --muted: #9aa4b5; --line: #2c323c;
+            --card: #1c2027; --accent: #ef4a5b; --ok: #4ccf86; --bad: #ff7a6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 440px; margin: 0 auto; padding: 24px 20px 48px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  .status { color: var(--muted); font-size: .9rem; margin-bottom: 24px; }
+  .status b { color: var(--bad); }
+  .status.on b { color: var(--ok); }
+  .field { margin-bottom: 14px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 4px; }
+  input { width: 100%; padding: 10px 12px; font: inherit; color: var(--fg);
+          background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; gap: 10px; }
+  .row .field { flex: 1; }
+  .ghost { width: 100%; padding: 10px; margin-bottom: 28px; font: inherit; color: var(--fg);
+           background: transparent; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  .ping { display: block; width: 190px; height: 190px; margin: 0 auto 28px; border: 0;
+          border-radius: 50%; background: var(--accent); color: #fff; font: 700 1.4rem/1.2 inherit;
+          cursor: pointer; transition: transform .1s; }
+  .ping:active { transform: scale(.96); }
+  .ping:disabled { opacity: .4; cursor: not-allowed; }
+  #log, #recv { font: .8rem/1.5 ui-monospace, Menlo, Consolas, monospace; color: var(--muted);
+         border-top: 1px solid var(--line); padding-top: 12px; min-height: 80px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Request help</h1>
+  <div class="status" id="status">Broker: <b>connecting…</b></div>
+
+  <div class="row">
+    <div class="field"><label for="lat">Latitude</label><input id="lat" inputmode="decimal" value="32.8801"></div>
+    <div class="field"><label for="lon">Longitude</label><input id="lon" inputmode="decimal" value="-117.2340"></div>
+  </div>
+  <button class="ghost" id="locate">Use my phone's location</button>
+
+  <button class="ping" id="send" disabled>Send<br>ping</button>
+
+  <div id="log">Nothing sent yet.</div>
+
+  <div class="field" style="margin-top:20px"><label>Received back from the broker</label></div>
+  <div id="recv">Nothing received yet.</div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+  // ---- Choose where the broker is ----
+  const USE_CLOUD = true;    // false = broker in Docker on your laptop, true = HiveMQ Cloud
+  const TOPIC = "vast/team2-k8f3x92q/ping"; 
+
+  // Docker broker (no login). If this page is served from the laptop, e.g.
+  // http://LAPTOP_IP:9000/vast_ping.html, the hostname is picked up automatically,
+  // so a phone on the same WiFi connects to the laptop without any edits.
+  const LOCAL = { host: location.hostname || "localhost", port: 8000 };
+
+  // HiveMQ Cloud: copy these from console.hivemq.cloud (cluster URL + Access Management).
+  // Port 8884 is the secure WebSocket port; check it matches your cluster page.
+  const CLOUD = { host: "broker.hivemq.com", port: 8884,
+                  username: "", password: "" };
+  // ------------------------------------
+
+  const statusEl = document.getElementById("status");
+  const sendBtn  = document.getElementById("send");
+  const logEl    = document.getElementById("log");
+  const recvEl   = document.getElementById("recv");
+
+  const url = USE_CLOUD
+    ? `wss://${CLOUD.host}:${CLOUD.port}/mqtt`
+    : `ws://${LOCAL.host}:${LOCAL.port}/mqtt`;
+  const opts = {
+    clientId: "vast_web_" + Math.random().toString(16).slice(2, 8),
+    reconnectPeriod: 3000,
+  };
+  if (USE_CLOUD && CLOUD.username) { opts.username = CLOUD.username; opts.password = CLOUD.password; }
+  const client = mqtt.connect(url, opts);
+
+  function setStatus(text, on) {
+    statusEl.className = "status" + (on ? " on" : "");
+    statusEl.innerHTML = `Broker: <b>${text}</b>`;
+    sendBtn.disabled = !on;
+  }
+
+  const received = [];
+  client.on("connect", () => {
+    setStatus("connected", true);
+    client.subscribe(TOPIC, { qos: 1 });   // also listen, so the page shows what the broker relays back
+  });
+  client.on("message", (topic, payload) => {
+    received.unshift(`${new Date().toLocaleTimeString()}  ${topic}\n${payload.toString()}`);
+    recvEl.textContent = received.slice(0, 5).join("\n\n");
+  });
+  client.on("reconnect", () => setStatus("reconnecting…", false));
+  client.on("close", () => setStatus("disconnected", false));
+  client.on("error", err => { setStatus("error: " + err.message, false); });
+
+  sendBtn.addEventListener("click", () => {
+    const lat = parseFloat(document.getElementById("lat").value);
+    const lon = parseFloat(document.getElementById("lon").value);
+    if (Number.isNaN(lat) || Number.isNaN(lon)) {
+      logEl.textContent = "Latitude and longitude must be numbers.";
+      return;
+    }
+    const msg = JSON.stringify({ lat, lon, acc: window.lastAcc ?? null, t: Date.now() });
+    client.publish(TOPIC, msg, { qos: 1 }, err => {
+      const time = new Date().toLocaleTimeString();
+      logEl.textContent = err
+        ? `${time}  publish failed: ${err.message}`
+        : `${time}  sent to ${TOPIC}\n${msg}`;
+    });
+  });
+
+  document.getElementById("locate").addEventListener("click", () => {
+    if (!navigator.geolocation) { logEl.textContent = "This browser has no geolocation."; return; }
+    navigator.geolocation.getCurrentPosition(pos => {
+      document.getElementById("lat").value = pos.coords.latitude.toFixed(6);
+      document.getElementById("lon").value = pos.coords.longitude.toFixed(6);
+      window.lastAcc = Math.round(pos.coords.accuracy);
+      logEl.textContent = `Location set (accurate to about ${window.lastAcc} m).`;
+    }, err => {
+      logEl.textContent = "Location failed: " + err.message +
+        "\nGeolocation only works on https:// pages or localhost.";
+    }, { enableHighAccuracy: true, timeout: 10000 });
+  });
+</script>
+</body>
+</html>
